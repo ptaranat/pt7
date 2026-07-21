@@ -48,6 +48,8 @@ Edit the `KEYS` table in `init.lua`:
 
 The `talk` role is the big key, `primary` is the tall one, the rest stack in the left column. [Keycode reference](https://eastmanreference.com/complete-list-of-applescript-key-codes).
 
+Add `repeats = true` to a key and holding it repeats, at your Mac's key repeat rate. The arrow keys ship this way.
+
 `ui.html` is re-read on every page load: edit, refresh, done.
 
 ## tailscale

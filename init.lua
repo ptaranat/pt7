@@ -16,8 +16,8 @@ local RIGHT_CMD_FLAGS = masks.command + (masks.deviceRightCommand or 0x10)
 -- color: "red" | "green" | nil.
 local KEYS = {
   { id = "talk",   label = "talk", keycode = 0x36, role = "talk", flags = RIGHT_CMD_FLAGS },
-  { id = "up",     label = "up",    keycode = 0x7E },
-  { id = "down",   label = "down",  keycode = 0x7D },
+  { id = "up",     label = "up",    keycode = 0x7E, repeats = true },
+  { id = "down",   label = "down",  keycode = 0x7D, repeats = true },
   { id = "tab",    label = "tab",   keycode = 0x30 },
   { id = "escape", label = "esc",   keycode = 0x35, color = "red" },
   { id = "enter",  label = "enter", keycode = 0x24, role = "primary", color = "green" },
@@ -27,13 +27,35 @@ local byId = {}
 for _, key in ipairs(KEYS) do byId[key.id] = key end
 
 local KEYCODE_PROP = hs.eventtap.event.properties.keyboardEventKeycode
+local AUTOREPEAT_PROP = hs.eventtap.event.properties.keyboardEventAutorepeat
 
-local function press(key, isDown)
+local function press(key, isDown, isRepeat)
   local e = hs.eventtap.event.newKeyEvent({}, key.keycode, isDown)
   e:setProperty(KEYCODE_PROP, key.keycode) -- Handy reads raw keycodes
+  if isRepeat then e:setProperty(AUTOREPEAT_PROP, 1) end
   e:rawFlags(isDown and (key.flags or 0) or 0)
   e:post()
-  print(string.format("[PT-7] %s %s", key.id, isDown and "down" or "up"))
+  if not isRepeat then
+    print(string.format("[PT-7] %s %s", key.id, isDown and "down" or "up"))
+  end
+end
+
+-- Synthetic key events never auto-repeat, so held "repeats" keys are re-posted.
+local repeating = {}
+
+local function stopRepeat(key)
+  local t = repeating[key.id]
+  if t then t:stop(); repeating[key.id] = nil end
+end
+
+local function startRepeat(key)
+  if repeating[key.id] then return end
+  repeating[key.id] = hs.timer.doAfter(hs.eventtap.keyRepeatDelay(), function()
+    repeating[key.id] = hs.timer.doEvery(hs.eventtap.keyRepeatInterval(), function()
+      press(key, true, true)
+    end)
+    press(key, true, true)
+  end)
 end
 
 -- Resolve through the ~/.hammerspoon symlink so ui.html loads from the repo.
@@ -96,8 +118,15 @@ pt7Server:setCallback(function(method, path)
     end
   elseif method == "POST" then
     local id, action = sub:match("^/(%w+)/(%a+)$")
-    if byId[id] and (action == "down" or action == "up") then
-      press(byId[id], action == "down")
+    local key = byId[id]
+    if key and (action == "down" or action == "up") then
+      if action == "down" then
+        press(key, true)
+        if key.repeats then startRepeat(key) end
+      else
+        stopRepeat(key)
+        press(key, false)
+      end
       return "ok", 200, TEXT
     end
   end
@@ -110,5 +139,8 @@ print(string.format("[PT-7] deck at http://%s.local:%d/%s/", host, PORT, TOKEN))
 
 -- Release everything on reload/quit so no key ever sticks.
 hs.shutdownCallback = function()
-  for _, key in ipairs(KEYS) do press(key, false) end
+  for _, key in ipairs(KEYS) do
+    stopRepeat(key)
+    press(key, false)
+  end
 end
