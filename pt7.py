@@ -45,6 +45,9 @@ class WindowsKeys:
     VK = {"right_ctrl": 0xA3, "up": 0x26, "down": 0x28,
           "tab": 0x09, "esc": 0x1B, "enter": 0x0D}
     EXTENDED = {"right_ctrl", "up", "down"}
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_EXTENDEDKEY = 0x1
+    KEYEVENTF_KEYUP = 0x2
     repeats_in_host = True  # SendInput generates no typematic repeat
 
     def __init__(self):
@@ -75,10 +78,10 @@ class WindowsKeys:
 
     def send(self, name, down):
         ct = self._ctypes
-        flags = 0 if down else 0x2                       # KEYEVENTF_KEYUP
+        flags = 0 if down else self.KEYEVENTF_KEYUP
         if name in self.EXTENDED:
-            flags |= 0x1                                 # KEYEVENTF_EXTENDEDKEY
-        inp = self._INPUT(type=1)                        # INPUT_KEYBOARD
+            flags |= self.KEYEVENTF_EXTENDEDKEY
+        inp = self._INPUT(type=self.INPUT_KEYBOARD)
         inp.ki = self._KEYBDINPUT(wVk=self.VK[name], wScan=0,
                                   dwFlags=flags, time=0, dwExtraInfo=None)
         sent = self._user32.SendInput(1, ct.byref(inp), ct.sizeof(inp))
