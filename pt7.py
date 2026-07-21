@@ -125,7 +125,7 @@ BACKEND = WindowsKeys() if platform.system() == "Windows" else LinuxKeys()
 
 # Every send happens under _lock, so a repeat timer that fires mid-release
 # cannot slip a down event in after the up and leave the key stuck.
-_lock = threading.RLock()
+_lock = threading.Lock()
 _timers = {}
 _held = set()
 
@@ -134,8 +134,10 @@ def key_down(key):
     with _lock:
         _held.add(key["id"])
         BACKEND.send(key["key"], True)
-        if key.get("repeats") and BACKEND.repeats_in_host:
-            schedule_repeat(key, REPEAT_DELAY)
+        # A lost response makes the phone re-post "down"; without the _timers
+        # check that duplicate would start a second repeat chain.
+        if key.get("repeats") and BACKEND.repeats_in_host and key["id"] not in _timers:
+            _schedule_repeat(key, REPEAT_DELAY)
     print(f"[PT-7] {key['id']} down")
 
 
@@ -149,21 +151,19 @@ def key_up(key):
     print(f"[PT-7] {key['id']} up")
 
 
-def schedule_repeat(key, delay):
+def _schedule_repeat(key, delay):  # caller holds _lock
     def fire():
         with _lock:
             if key["id"] not in _held:
+                _timers.pop(key["id"], None)
                 return
             BACKEND.send(key["key"], True)
-            schedule_repeat(key, REPEAT_INTERVAL)
+            _schedule_repeat(key, REPEAT_INTERVAL)
 
-    with _lock:
-        if key["id"] not in _held:
-            return
-        t = threading.Timer(delay, fire)
-        t.daemon = True
-        _timers[key["id"]] = t
-        t.start()
+    t = threading.Timer(delay, fire)
+    t.daemon = True
+    _timers[key["id"]] = t
+    t.start()
 
 
 def release_all():
@@ -179,6 +179,7 @@ def token():
     base.mkdir(parents=True, exist_ok=True)
     t = secrets.token_hex(4)
     f.write_text(t)
+    f.chmod(0o600)
     return t
 
 
@@ -191,6 +192,8 @@ def page():
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive: no TCP handshake per key press
+
     def log_message(self, *args):
         pass
 
