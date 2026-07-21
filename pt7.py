@@ -37,6 +37,7 @@ BY_ID = {k["id"]: k for k in KEYS}
 
 REPEAT_DELAY = 0.30
 REPEAT_INTERVAL = 0.05
+MAX_BODY = 64 * 1024
 
 
 class WindowsKeys:
@@ -193,9 +194,21 @@ def page():
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive: no TCP handshake per key press
+    timeout = 30
 
     def log_message(self, *args):
         pass
+
+    def _drain_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = -1
+        unreadable = self.headers.get("Transfer-Encoding") or not 0 <= length <= MAX_BODY
+        if unreadable:
+            self.close_connection = True
+        elif length:
+            self.rfile.read(length)
 
     def _reply(self, status, body=b"", ctype="text/plain", extra=None):
         self.send_response(status)
@@ -207,6 +220,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        self._drain_body()
         prefix = "/" + TOKEN
         if not self.path.startswith(prefix):
             return self._reply(404, b"not found")
@@ -222,6 +236,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._reply(404, b"not found")
 
     def do_POST(self):
+        self._drain_body()
         prefix = "/" + TOKEN + "/"
         if not self.path.startswith(prefix):
             return self._reply(404, b"not found")
