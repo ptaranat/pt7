@@ -1,23 +1,27 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 # PT-7 host for Windows and Linux; macOS uses init.lua (Hammerspoon) instead.
-# Serves ui.html and injects real key events. Stdlib only on Windows;
-# Linux needs: pip install evdev
+# Serves ui.html and injects real key events. Run it with: uv run pt7.py
 #
-# UNTESTED SCAFFOLD written on a Mac. Verify list lives in the vault plan
-# "pt7-windows-linux-port" before trusting any of it.
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["evdev>=1.7 ; sys_platform == 'linux'"]
+# ///
 
 import atexit
 import json
 import os
 import platform
 import secrets
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = 8765
 INTERFACE = os.environ.get("PT7_INTERFACE", "")
 DIR = Path(__file__).resolve().parent
+ICON = DIR / "icon.png"
 
 # "key" is a symbolic name each backend maps to its own codes.
 # The talk key is right ctrl here: bind your dictation app's push-to-talk to it.
@@ -46,6 +50,8 @@ class WindowsKeys:
         import ctypes
         from ctypes import wintypes
 
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
                         ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -58,7 +64,11 @@ class WindowsKeys:
             _anonymous_ = ("u",)
             _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+
         self._ctypes = ctypes
+        self._user32 = user32
         self._INPUT = INPUT
         self._KEYBDINPUT = KEYBDINPUT
 
@@ -70,12 +80,28 @@ class WindowsKeys:
         inp = self._INPUT(type=1)                        # INPUT_KEYBOARD
         inp.ki = self._KEYBDINPUT(wVk=self.VK[name], wScan=0,
                                   dwFlags=flags, time=0, dwExtraInfo=None)
-        ct.windll.user32.SendInput(1, ct.byref(inp), ct.sizeof(inp))
+        sent = self._user32.SendInput(1, ct.byref(inp), ct.sizeof(inp))
+        if sent != 1:
+            err = ct.get_last_error()
+            print(f"[PT-7] SendInput blocked for {name} (error {err}); "
+                  "an elevated window in front means the host needs elevation too")
+
+
+UINPUT_HELP = """[PT-7] cannot open /dev/uinput: {err}
+
+Give yourself access once, then log out and back in:
+
+  echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | \\
+    sudo tee /etc/udev/rules.d/99-pt7-uinput.rules
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  sudo usermod -aG input $USER
+
+If the node is missing entirely: sudo modprobe uinput
+"""
 
 
 class LinuxKeys:
     # uinput is below X11/Wayland, so the same code works on both.
-    # Needs write access to /dev/uinput: udev rule + "input" group, see plan.
     repeats_in_host = False  # the display server auto-repeats held evdev keys
 
     def __init__(self):
@@ -84,7 +110,11 @@ class LinuxKeys:
         self.CODE = {"right_ctrl": ecodes.KEY_RIGHTCTRL, "up": ecodes.KEY_UP,
                      "down": ecodes.KEY_DOWN, "tab": ecodes.KEY_TAB,
                      "esc": ecodes.KEY_ESC, "enter": ecodes.KEY_ENTER}
-        self._ui = UInput({ecodes.EV_KEY: list(self.CODE.values())}, name="PT-7")
+        try:
+            self._ui = UInput({ecodes.EV_KEY: list(self.CODE.values())}, name="PT-7")
+        except Exception as err:
+            raise SystemExit(UINPUT_HELP.format(err=err))
+        time.sleep(1)  # the compositor drops events sent before it adopts the device
 
     def send(self, name, down):
         self._ui.write(self._e.EV_KEY, self.CODE[name], 1 if down else 0)
@@ -93,48 +123,52 @@ class LinuxKeys:
 
 BACKEND = WindowsKeys() if platform.system() == "Windows" else LinuxKeys()
 
-_lock = threading.Lock()
+# Every send happens under _lock, so a repeat timer that fires mid-release
+# cannot slip a down event in after the up and leave the key stuck.
+_lock = threading.RLock()
 _timers = {}
+_held = set()
 
 
-def press(key, down, is_repeat=False):
-    BACKEND.send(key["key"], down)
-    if not is_repeat:
-        print(f"[PT-7] {key['id']} {'down' if down else 'up'}")
-
-
-def stop_repeat(key):
+def key_down(key):
     with _lock:
+        _held.add(key["id"])
+        BACKEND.send(key["key"], True)
+        if key.get("repeats") and BACKEND.repeats_in_host:
+            schedule_repeat(key, REPEAT_DELAY)
+    print(f"[PT-7] {key['id']} down")
+
+
+def key_up(key):
+    with _lock:
+        _held.discard(key["id"])
         t = _timers.pop(key["id"], None)
-    if t:
-        t.cancel()
+        if t:
+            t.cancel()
+        BACKEND.send(key["key"], False)
+    print(f"[PT-7] {key['id']} up")
 
 
-def start_repeat(key):
+def schedule_repeat(key, delay):
     def fire():
-        press(key, True, is_repeat=True)
-        schedule(REPEAT_INTERVAL)
-
-    def schedule(delay):
         with _lock:
-            if key["id"] not in _timers:
+            if key["id"] not in _held:
                 return
-            _timers[key["id"]] = threading.Timer(delay, fire)
-            _timers[key["id"]].daemon = True
-            _timers[key["id"]].start()
+            BACKEND.send(key["key"], True)
+            schedule_repeat(key, REPEAT_INTERVAL)
 
     with _lock:
-        if key["id"] in _timers:
+        if key["id"] not in _held:
             return
-        _timers[key["id"]] = threading.Timer(REPEAT_DELAY, fire)
-        _timers[key["id"]].daemon = True
-        _timers[key["id"]].start()
+        t = threading.Timer(delay, fire)
+        t.daemon = True
+        _timers[key["id"]] = t
+        t.start()
 
 
 def release_all():
     for key in KEYS:
-        stop_repeat(key)
-        press(key, False)
+        key_up(key)
 
 
 def token():
@@ -180,6 +214,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, page().encode(), "text/html; charset=utf-8")
         if sub == "/ping":
             return self._reply(200, b"ok")
+        if sub == "/icon.png" and ICON.exists():
+            return self._reply(200, ICON.read_bytes(), "image/png")
         return self._reply(404, b"not found")
 
     def do_POST(self):
@@ -190,21 +226,33 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] in BY_ID and parts[1] in ("down", "up"):
             key = BY_ID[parts[0]]
             if parts[1] == "down":
-                press(key, True)
-                if key.get("repeats") and BACKEND.repeats_in_host:
-                    start_repeat(key)
+                key_down(key)
             else:
-                stop_repeat(key)
-                press(key, False)
+                key_up(key)
             return self._reply(200, b"ok")
         return self._reply(404, b"not found")
+
+
+def lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))  # no packets, just picks the outbound route
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
 
 
 if __name__ == "__main__":
     atexit.register(release_all)
     server = ThreadingHTTPServer((INTERFACE, PORT), Handler)
     host = platform.node().split(".")[0] or "localhost"
-    print(f"[PT-7] deck at http://{host}:{PORT}/{TOKEN}/")
+    print(f"[PT-7] deck at http://{host}:{PORT}/{TOKEN}/", flush=True)
+    ip = INTERFACE or lan_ip()
+    if ip:
+        # Windows has no Bonjour, so the hostname above may not resolve from a phone.
+        print(f"[PT-7] or by address  http://{ip}:{PORT}/{TOKEN}/", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
