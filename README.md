@@ -44,7 +44,9 @@ Two hosts, same page: `init.lua` runs under Hammerspoon on a Mac, `pt7.py` runs 
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/). It brings its own Python, so that is the only thing to install.
 
-2. ```sh
+2. In a terminal:
+
+   ```sh
    git clone https://github.com/ptaranat/pt7.git
    cd pt7
    uv run pt7.py
@@ -66,6 +68,41 @@ sudo usermod -aG input $USER
 Log out and back in for the group. The first run tells you this too if you skip it. Injecting below the display server means X11 and Wayland both work.
 
 On Windows the keys go through `SendInput`, no setup and no admin rights. One catch: Windows will not let a normal program type into an elevated window, so if your editor runs as administrator, run PT-7 as administrator too.
+
+## keeping it running
+
+`pt7.py` is executable and carries its own dependencies, so `./pt7.py` from anywhere works once uv is installed. To stop thinking about it entirely, start it at login.
+
+On Linux, put this in `~/.config/systemd/user/pt7.service`, with your own paths (`which uv` and wherever you cloned):
+
+```ini
+[Unit]
+Description=PT-7
+
+[Service]
+ExecStart=%h/.local/bin/uv run %h/pt7/pt7.py
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now pt7
+journalctl --user -u pt7 -f    # the address it prints, and every key press
+```
+
+Add `loginctl enable-linger $USER` if you want the deck up before you log in.
+
+On Windows, save a `pt7.cmd` next to `pt7.py`:
+
+```bat
+@echo off
+cd /d "%~dp0"
+uv run pt7.py
+```
+
+Press Win+R, run `shell:startup`, and drop a shortcut to it in the folder that opens. Set the shortcut's Run to Minimized so it stays out of your way.
 
 ## your own keys
 
