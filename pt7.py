@@ -17,6 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PORT = 8765
 INTERFACE = os.environ.get("PT7_INTERFACE", "")
@@ -127,47 +128,42 @@ class LinuxKeys:
 
 BACKEND = WindowsKeys() if platform.system() == "Windows" else LinuxKeys()
 
-# Every send happens under _lock, so a repeat timer that fires mid-release
-# cannot slip a down event in after the up and leave the key stuck.
+# Every send happens under _lock, so a repeat that wakes mid-release cannot
+# slip a down event in after the up and leave the key stuck.
 _lock = threading.Lock()
-_timers = {}
-_held = set()
+_stops = {}  # key id -> event that ends its repeat thread
 
 
 def key_down(key):
     with _lock:
-        _held.add(key["id"])
         BACKEND.send(key["key"], True)
-        # A lost response makes the phone re-post "down"; without the _timers
+        # A lost response makes the phone re-post "down"; without the _stops
         # check that duplicate would start a second repeat chain.
-        if key.get("repeats") and BACKEND.repeats_in_host and key["id"] not in _timers:
-            _schedule_repeat(key, REPEAT_DELAY)
+        if key.get("repeats") and BACKEND.repeats_in_host and key["id"] not in _stops:
+            stop = threading.Event()
+            _stops[key["id"]] = stop
+            threading.Thread(target=_repeat, args=(key, stop), daemon=True).start()
     print(f"[PT-7] {key['id']} down")
 
 
 def key_up(key):
     with _lock:
-        _held.discard(key["id"])
-        t = _timers.pop(key["id"], None)
-        if t:
-            t.cancel()
+        stop = _stops.pop(key["id"], None)
+        if stop:
+            stop.set()
         BACKEND.send(key["key"], False)
     print(f"[PT-7] {key['id']} up")
 
 
-def _schedule_repeat(key, delay):  # caller holds _lock
-    def fire():
+def _repeat(key, stop):
+    # One thread for as long as the key is held, rather than one per tick.
+    delay = REPEAT_DELAY
+    while not stop.wait(delay):
         with _lock:
-            if key["id"] not in _held:
-                _timers.pop(key["id"], None)
+            if stop.is_set():  # released while this thread waited for the lock
                 return
             BACKEND.send(key["key"], True)
-            _schedule_repeat(key, REPEAT_INTERVAL)
-
-    t = threading.Timer(delay, fire)
-    t.daemon = True
-    _timers[key["id"]] = t
-    t.start()
+        delay = REPEAT_INTERVAL
 
 
 def release_all():
@@ -222,12 +218,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _route(self):
+        # self.path carries any query string; routing only cares about the path.
+        return urlsplit(self.path).path
+
     def do_GET(self):
         self._drain_body()
+        path = self._route()
         prefix = "/" + TOKEN
-        if not self.path.startswith(prefix):
+        if not path.startswith(prefix):
             return self._reply(404, b"not found")
-        sub = self.path[len(prefix):]
+        sub = path[len(prefix):]
         if sub == "":
             return self._reply(302, extra={"Location": prefix + "/"})
         if sub == "/":
@@ -240,10 +241,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._drain_body()
+        path = self._route()
         prefix = "/" + TOKEN + "/"
-        if not self.path.startswith(prefix):
+        if not path.startswith(prefix):
             return self._reply(404, b"not found")
-        parts = self.path[len(prefix):].split("/")
+        parts = path[len(prefix):].split("/")
         if len(parts) == 2 and parts[0] in BY_ID and parts[1] in ("down", "up"):
             key = BY_ID[parts[0]]
             if parts[1] == "down":
