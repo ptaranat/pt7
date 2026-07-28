@@ -15,7 +15,7 @@ Made for dictating into [Handy](https://handy.computer) while using Claude Code.
 
 Your computer serves a small page to your phone over Wi-Fi. No app, no cloud.
 
-Every button presses a real key. The talk key holds right Command on a Mac, right Ctrl on Windows and Linux, whichever one you gave Handy for push-to-talk.
+Every button presses a real key. The talk key holds Ctrl+Space on every platform, whatever you gave Handy for push-to-talk. One hotkey, all your machines, and it survives a keyboard sharer like Synergy.
 
 The lamp lights while you talk. The display counts your take, and blinks OFFLINE if your computer is unreachable.
 
@@ -38,7 +38,7 @@ Two hosts, same page: `init.lua` runs under Hammerspoon on a Mac, `pt7.py` runs 
 
 4. Open the Hammerspoon Console (menu bar icon, then Console). PT-7 prints your deck's private address there. Open it on your phone and Add to Home Screen.
 
-5. Set your dictation app's push-to-talk key to right Command.
+5. Set your dictation app's push-to-talk shortcut to Ctrl+Space.
 
 ## setup, windows and linux
 
@@ -54,7 +54,7 @@ Two hosts, same page: `init.lua` runs under Hammerspoon on a Mac, `pt7.py` runs 
 
 3. PT-7 prints two addresses, one by name and one by IP. Open whichever your phone can reach and Add to Home Screen. Windows has no Bonjour, so the name usually will not resolve and the IP one will.
 
-4. Set your dictation app's push-to-talk key to right Ctrl.
+4. Set your dictation app's push-to-talk shortcut to Ctrl+Space.
 
 On Linux the keys go through `uinput`, which needs permission once:
 
@@ -121,6 +121,8 @@ Elsewhere, edit the `KEYS` list in `pt7.py`. Same fields, except `key` is a name
 ```python
 {"id": "escape", "label": "esc", "key": "esc", "color": "red"},
 ```
+
+Add `"mods": ["ctrl"]` to hold modifiers around a key, as the talk key does. On a Mac that is the `flags` field instead.
 
 Adding a key means adding it to the `VK` and `CODE` tables in the same file. `"repeats": True` works the same way, though on Linux the display server already repeats held keys, so the host stays out of it.
 

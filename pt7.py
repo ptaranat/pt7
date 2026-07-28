@@ -24,10 +24,10 @@ INTERFACE = os.environ.get("PT7_INTERFACE", "")
 DIR = Path(__file__).resolve().parent
 ICON = DIR / "icon.png"
 
-# "key" is a symbolic name each backend maps to its own codes.
-# The talk key is right ctrl here: bind your dictation app's push-to-talk to it.
+# "key" is a symbolic name each backend maps to its own codes, "mods" are held
+# around it. The talk key is ctrl+space: bind your dictation app to it.
 KEYS = [
-    {"id": "talk",   "label": "talk",  "key": "right_ctrl", "role": "talk"},
+    {"id": "talk",   "label": "talk",  "key": "space", "mods": ["ctrl"], "role": "talk"},
     {"id": "up",     "label": "up",    "key": "up",    "repeats": True},
     {"id": "down",   "label": "down",  "key": "down",  "repeats": True},
     {"id": "tab",    "label": "tab",   "key": "tab"},
@@ -42,10 +42,11 @@ MAX_BODY = 64 * 1024
 
 
 class WindowsKeys:
-    # Arrows and right ctrl are extended (E0) keys; SendInput needs the flag.
-    VK = {"right_ctrl": 0xA3, "up": 0x26, "down": 0x28,
+    # Arrows are extended (E0) keys; SendInput needs the flag.
+    # Ctrl is VK_LCONTROL, not generic VK_CONTROL, to look like real hardware.
+    VK = {"ctrl": 0xA2, "space": 0x20, "up": 0x26, "down": 0x28,
           "tab": 0x09, "esc": 0x1B, "enter": 0x0D}
-    EXTENDED = {"right_ctrl", "up", "down"}
+    EXTENDED = {"up", "down"}
     INPUT_KEYBOARD = 1
     KEYEVENTF_EXTENDEDKEY = 0x1
     KEYEVENTF_KEYUP = 0x2
@@ -112,9 +113,10 @@ class LinuxKeys:
     def __init__(self):
         from evdev import UInput, ecodes
         self._e = ecodes
-        self.CODE = {"right_ctrl": ecodes.KEY_RIGHTCTRL, "up": ecodes.KEY_UP,
-                     "down": ecodes.KEY_DOWN, "tab": ecodes.KEY_TAB,
-                     "esc": ecodes.KEY_ESC, "enter": ecodes.KEY_ENTER}
+        self.CODE = {"ctrl": ecodes.KEY_LEFTCTRL, "space": ecodes.KEY_SPACE,
+                     "up": ecodes.KEY_UP, "down": ecodes.KEY_DOWN,
+                     "tab": ecodes.KEY_TAB, "esc": ecodes.KEY_ESC,
+                     "enter": ecodes.KEY_ENTER}
         try:
             self._ui = UInput({ecodes.EV_KEY: list(self.CODE.values())}, name="PT-7")
         except Exception as err:
@@ -136,6 +138,8 @@ _stops = {}  # key id -> event that ends its repeat thread
 
 def key_down(key):
     with _lock:
+        for mod in key.get("mods", ()):
+            BACKEND.send(mod, True)
         BACKEND.send(key["key"], True)
         # A lost response makes the phone re-post "down"; without the _stops
         # check that duplicate would start a second repeat chain.
@@ -152,6 +156,9 @@ def key_up(key):
         if stop:
             stop.set()
         BACKEND.send(key["key"], False)
+        # Reverse order: the modifier is still down as the key releases.
+        for mod in reversed(key.get("mods", ())):
+            BACKEND.send(mod, False)
     print(f"[PT-7] {key['id']} up")
 
 

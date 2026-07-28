@@ -1,5 +1,5 @@
 -- PT-7: a phone-sized key deck for the Mac it runs on. LAN-only, no dependencies.
--- The talk key latches right-command for push-to-talk dictation apps like Handy.
+-- The talk key holds ctrl+space for push-to-talk dictation apps like Handy.
 
 local PORT = 8765
 
@@ -9,13 +9,13 @@ local PORT = 8765
 local INTERFACE = hs.settings.get("PT7.interface")
 
 local masks = hs.eventtap.event.rawFlagMasks
-local RIGHT_CMD_FLAGS = masks.command + (masks.deviceRightCommand or 0x10)
+local CTRL_FLAGS = masks.control + (masks.deviceLeftControl or 0x1)
 
 -- The phone lays keys out by role: "talk" is the big hold key on top, "primary"
 -- fills the tall right slot, everything else stacks in the left column.
 -- color: "red" | "green" | nil.
 local KEYS = {
-  { id = "talk",   label = "talk", keycode = 0x36, role = "talk", flags = RIGHT_CMD_FLAGS },
+  { id = "talk",   label = "talk", keycode = 0x31, role = "talk", flags = CTRL_FLAGS },
   { id = "up",     label = "up",    keycode = 0x7E, repeats = true },
   { id = "down",   label = "down",  keycode = 0x7D, repeats = true },
   { id = "tab",    label = "tab",   keycode = 0x30 },
@@ -33,7 +33,7 @@ local function press(key, isDown, isRepeat)
   local e = hs.eventtap.event.newKeyEvent({}, key.keycode, isDown)
   e:setProperty(KEYCODE_PROP, key.keycode) -- Handy reads raw keycodes
   if isRepeat then e:setProperty(AUTOREPEAT_PROP, 1) end
-  e:rawFlags(isDown and (key.flags or 0) or 0)
+  e:rawFlags(key.flags or 0) -- ctrl is still held as space releases
   e:post()
   if not isRepeat then
     print(string.format("[PT-7] %s %s", key.id, isDown and "down" or "up"))
